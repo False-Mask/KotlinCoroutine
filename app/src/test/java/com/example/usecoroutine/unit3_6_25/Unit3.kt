@@ -1,11 +1,11 @@
-package com.example.usecoroutine
+package com.example.usecoroutine.unit3_6_25
 
 import kotlinx.coroutines.delay
 import org.junit.Test
 import kotlin.coroutines.*
 
 //3.1.1
-@Test
+//@Test
 fun x(){
     val x =  suspend {
         System.currentTimeMillis()
@@ -40,7 +40,7 @@ fun x(){
 
 
 //3.1.3
-@Test
+//@Test
 fun main(){
     launchCoroutine(CoroutineProducer<Long>()){
         println("Coroutine begin")
@@ -70,7 +70,7 @@ fun <T,R>launchCoroutine(receiver:R,block:suspend R.()->T){
 
 
 //3.1.4
-@Test
+//@Test
 fun main_3_1_4(){
     runSuspend{
 
@@ -103,15 +103,12 @@ fun suspendMain(){
 
 
 //3.2.1挂机函数
-@Test
+//@Test
 fun main_3_2_1(){
 
 }
 suspend fun suspendFunc01(){
     return
 }
-suspend fun suspendFun02(a:String,b:String)=
-    suspendCoroutine<Long> {
-
-    }
+suspend fun suspendFun02(a:String,b:String) = suspendCoroutine<Long> {}
 
