@@ -1,4 +1,4 @@
-package com.example.study.suspend.suspendext
+package com.example.leading.suspend.suspendext
 
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.flow.asFlow

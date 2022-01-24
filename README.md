@@ -18,7 +18,6 @@
 
 > Time ：2022-1-14——利用Kotlin ByteCode插件对挂起函数进行分析。（这个插件不是很好用。）
 >
-> Time：2022-1-24——使用Jadx对编译后打包的jar包进行分析
 
 ## 概述
 
@@ -451,7 +450,9 @@ public class SuspendBody {
 
 > Time： 2022 -1-15
 
-前面讲了比较常见的挂起函数，除此之外还有一种比较另类的挂起函数。或许不常用但是得知道有这玩意。
+前面讲了比较常见的挂起函数，除此之外还有一种比较另类的挂起函数。
+
+那就是lambda的形式，
 
 ```kotlin
 fun main() {
@@ -536,11 +537,11 @@ public final override fun resumeWith(result: Result<Any?>) {
 
 > 前面讲述了两种挂起函数会发现其实是一样的，底层都是创建一个挂起函数然后再调用。但是挂起函数有什么用？简化回调，异步操作同步写法。很爽，但是他是怎么实现的呢？
 
-## 关于挂起函数的回调
+### 关于挂起函数的回调
 
 我们知道在创建挂起函数会自动生成一个ContinuationImp,ContinuationImp是BaseContinuation的一个实现类，ContinuationImp在创建的时候需要一个Continuation，而这个传入的Continuation就是为了当挂起函数完毕后调用，比如我suspend a()调用了suspend b，a就会把自己的continuation传给b，然后b在创建ContinuationImp的时候就会把a传入的continuation传入到构造函数。这样但b执行完毕（注意是执行完毕，不是恢复也不是挂起）就可以通过调用invokeSuspend来恢复a的执行。发现了嘛，挂起函数其实是通过编译器生成Continuation来简化回调的，但是它并没有完全去除回调，continuation的一层层持有关系其实就是回调，只是自动生成了回调。
 
-## 关于挂起函数的挂起
+### 关于挂起函数的挂起
 
 前面稍微提了一下的，挂起的实现很是简单，简单到有些突兀。
 
@@ -558,7 +559,7 @@ continuation就不说了，调用挂起函数b判断返回值是不是CoroutineS
 
 
 
-## 关于挂起函数的恢复
+### 关于挂起函数的恢复
 
 或许你在想都return了怎么恢复？还能怎么恢复。当然是重新调用了，这在前面的continuation的invokeSuspend已经分析过了。
 
@@ -568,7 +569,136 @@ continuation不仅是建立了回调关系，除此之外还存储了程序执�
 
 
 
-## suspend
+# suspend lambda
+
+> Time： 2022-1-24
+
+
+
+## 测试代码
+
+```kotlin
+suspend fun main() {
+    a {
+        println("before delay")
+        delay(1000)
+        println("after delay")
+    }
+}
+
+suspend fun a(block: suspend () -> Unit) {
+    block()
+}
+```
+
+
+
+## 反编译
+
+你如果直接反编译suspend的Lambda表达是你会发现是这样的
+
+```kotlin
+Object var10000 = a((Function1)(new Function1((Continuation)null) {
+   int label;
+
+   @Nullable
+   public final Object invokeSuspend(@NotNull Object $result) {
+      Object var3 = IntrinsicsKt.getCOROUTINE_SUSPENDED();
+      String var2;
+      switch(this.label) {
+      case 0:
+         ResultKt.throwOnFailure($result);
+         var2 = "before delay";
+         System.out.println(var2);
+         this.label = 1;
+         if (DelayKt.delay(1000L, this) == var3) {
+            return var3;
+         }
+         break;
+      case 1:
+         ResultKt.throwOnFailure($result);
+         break;
+      default:
+         throw new IllegalStateException("call to 'resume' before 'invoke' with coroutine");
+      }
+
+      var2 = "after delay";
+      System.out.println(var2);
+      return Unit.INSTANCE;
+   }
+
+   @NotNull
+   public final Continuation create(@NotNull Continuation completion) {
+      Intrinsics.checkNotNullParameter(completion, "completion");
+      Function1 var2 = new <anonymous constructor>(completion);
+      return var2;
+   }
+
+   public final Object invoke(Object var1) {
+      return ((<undefinedtype>)this.create((Continuation)var1)).invokeSuspend(Unit.INSTANCE);
+   }
+}), $completion);
+```
+
+然而真实情况是这样嘛？
+
+生成了3个类
+
+![image-20220124135221777](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124135221777.png)
+
+
+
+
+
+## 解析
+
+suspend main中调用了挂起函数a，然后挂起函数根据对应的continuation，invoke了这个suspend lambda。
+
+![image-20220124135648236](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124135648236.png)
+
+SuspendLambda，很奇怪的是挂起函数体被单独抽离出来了，变成了一个类，在invoke的时候调用create新的实例。
+
+![image-20220124140003562](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124140003562.png)
+
+
+
+```java
+@NotNull
+    public final Continuation<Unit> create(@NotNull Continuation<?> continuation) {
+        return new LambdaKt$main$2(continuation);
+    }
+
+    @Nullable
+    public final Object invoke(@Nullable Continuation<? super Unit> continuation) {
+        return create(continuation).invokeSuspend(Unit.INSTANCE);
+    }
+```
+
+
+
+
+
+## 变化案例
+
+suspend ()->Unit会被编译成SuspendLambda，那么如果多加几个参数呢？又或者加receiver呢？
+
+其实还是一样的，只是实现的Fuction接口不再是Function1了而已。
+
+这里不展示了，有兴趣自己build 一个jar包jadx反编译一下即可。
+
+
+
+## 总结
+
+
+
+suspend lambda都会在编译后实现SuspendLambda接口。
+
+
+
+
+
+# suspend
 
 > Time 2022-1-15
 
@@ -1653,6 +1783,8 @@ public fun <T> (suspend () -> T).createCoroutine(
 
 就是把continuation 拦截然后在外包裹了一个SafeContinuation
 
+之所以要createCoroutineUnintercepted是为了确保挂起函数具备最基本的挂起和恢复的特性，用Safe包装是为了防止开发者createCoroutine以后多次resume，造成一些安全隐患。
+
 看看具体实现
 
 > 这段代码似乎有些熟悉，我好像见过——蔷
@@ -1685,7 +1817,7 @@ suspend()->T是个什么类？反编译一下啊
 
 ![image-20220118181246076](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220118181246076.png)
 
-编译器施加了魔法，把suspend ()->T 编译成了一个Function1也就是一个输入值，一个输出值的Function。（输入值是Continuation，输出值是T）。为啥他是BaseContinuationImpl其实我也不知道的（可能还有一些黑魔法）。
+编译器施加了魔法，把suspend ()->T 编译成了一个Function1(SuspendLambda)也就是一个输入值，一个输出值的Function。（输入值是Continuation，输出值是T）。为啥他是BaseContinuationImpl其实我也不知道的（因为SuspendLambda）。
 
 然后调用了create方法传入了 probeCompletion（也就是completion 等价于create时候传入的匿名Continuation ）
 
@@ -1738,7 +1870,9 @@ public fun intercepted(): Continuation<Any?> =
 
 拦截的话先是强转然后调用它的intercepted方法如果context里面有ContinuationInterceptor就调用它的interceptContinuation方法。如果没有ContinuationInterceptor那就直接返回this，并把intercepted赋值为this。	
 
-拦截的流程就完毕了
+拦截的流程就完毕了。
+
+
 
 #### 包裹SafeContinuation
 
@@ -1806,8 +1940,6 @@ public fun <T> Continuation<T>.resumeCancellableWith(
 进入之后先判断是不是DispatchedContinuation，使得话就调用另一个。
 
 如果不是就直接resumeWith相比前面的好像就是多了一个try catch。是这样嘛确实是的。
-
-这个try catch确保了当挂起函数内有异常抛出的时候会resume
 
 ```kotlin
 try {
@@ -3521,6 +3653,555 @@ interface MyCustomCoroutine : CoroutineContext.Element{
 他们的区别很明显，一个只能使用一个Key索引。
 
 一个是既可以使用BaseKey也可以使用子Key进行索引。
+
+
+
+
+
+
+
+# CoroutineContextElement——Source
+
+> Time：2022-1-24
+
+
+
+
+
+## ContinuationInterceptor
+
+之所以讲这个是因为它作用很强大。就好比网络请求的拦截器一样，有妙用。
+
+
+
+### 简单使用
+
+```kotlin
+class LogInterceptor : ContinuationInterceptor {
+
+    override val key: CoroutineContext.Key<*>
+        get() = ContinuationInterceptor
+
+    override fun <T> interceptContinuation(continuation: Continuation<T>): Continuation<T> {
+        return LogContinuation(continuation)
+    }
+}
+
+class LogContinuation<T> (private val continuation:Continuation<T>): Continuation<T> by continuation {
+    override fun resumeWith(result: Result<T>) {
+        println("resume前面")
+        continuation.resumeWith(result)
+        println("resume后")
+    }
+}
+```
+
+```ko
+fun main() {
+    suspend {
+
+        delay(1000)
+        delay(2000)
+        delay(3000)
+
+    }.startCoroutine(object : Continuation<Unit>{
+        override val context: CoroutineContext
+            get() = LogInterceptor()
+
+        override fun resumeWith(result: Result<Unit>) {
+            println("finished")
+        }
+
+    })
+
+    Thread.sleep(100000)
+
+}
+```
+
+这样就完成了resume的拦截，每次resume都会先调用resumeWith方法。
+
+
+
+### 拦截流程分析
+
+这个Continuation是什么时候被拦截了？在create之后start之前。
+
+stdlib的几个suspend函数的扩展都给出了对应的原理，先create然后拦截，然后resume。
+
+所以对于拦截的操作是基础框架在开启协程之前就做了的。
+
+```kotlin
+public fun <T> (suspend () -> T).startCoroutine(
+    completion: Continuation<T>
+) {
+    createCoroutineUnintercepted(completion).intercepted().resume(Unit)
+}
+```
+
+```kotlin
+public fun <R, T> (suspend R.() -> T).createCoroutine(
+    receiver: R,
+    completion: Continuation<T>
+): Continuation<Unit> =
+    SafeContinuation(createCoroutineUnintercepted(receiver, completion).intercepted(), COROUTINE_SUSPENDED)
+```
+
+```kotlin
+public fun <T> (suspend () -> T).startCoroutineCancellable(completion: Continuation<T>): Unit = runSafely(completion) {
+    createCoroutineUnintercepted(completion).intercepted().resumeCancellableWith(Result.success(Unit))
+}
+```
+
+
+
+### ContinuationInterceptor分析
+
+![image-20220124155425377](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124155425377.png)
+
+内容不多，就定义一个Key，重写了get和minusKey方法，加入了两个拦截方法。
+
+
+
+#### get & minusKey
+
+为什么要重写？
+
+为了适配子类多Key索引的情况，也就是适配AbstractCoroutineKey
+
+```kotlin
+public override operator fun <E : CoroutineContext.Element> get(key: CoroutineContext.Key<E>): E? {
+    @OptIn(ExperimentalStdlibApi::class)
+    if (key is AbstractCoroutineContextKey<*, *>) {
+        @Suppress("UNCHECKED_CAST")
+        return if (key.isSubKey(this.key)) key.tryCast(this) as? E else null
+    }
+    @Suppress("UNCHECKED_CAST")
+    return if (ContinuationInterceptor === key) this as E else null
+}
+
+
+public override fun minusKey(key: CoroutineContext.Key<*>): CoroutineContext {
+    @OptIn(ExperimentalStdlibApi::class)
+    if (key is AbstractCoroutineContextKey<*, *>) {
+        return if (key.isSubKey(this.key) && key.tryCast(this) != null) EmptyCoroutineContext else this
+    }
+    return if (ContinuationInterceptor === key) EmptyCoroutineContext else this
+}
+```
+
+逻辑不难，加一个判断，如果传入的Key是AbstractKey，就在试试this.key是不是子key。然后依据情况返回。
+
+如果只是普通的Key那么就直接抄Element的默认实现。
+
+
+
+#### interceptContinuation & release...
+
+进行拦截和进行释放的操作，实现是空的，需要实现类实现。
+
+
+
+
+
+## CoroutineDispatcher
+
+如果你点开CoroutineDispatcher去查看它的父类的时候，你会发现，父类是ContinuationInterceptor，所以它其实也就是一个拦截器。
+
+
+
+
+
+### CoroutineDispatcher简要介绍
+
+
+
+![image-20220124161632869](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124161632869.png)
+
+Base class to be extended by all coroutine dispatcher implementations.
+
+The following standard implementations are provided by kotlinx.coroutines as properties on the Dispatchers object:
+
+- Dispatchers.Default
+- Dispatchers.IO 
+- Dispatchers.Unconfined
+- Private thread pools can be created with newSingleThreadContext and newFixedThreadPoolContext.
+- An arbitrary Executor can be converted to a dispatcher with the asCoroutineDispatcher extension function.
+
+
+
+Dispatchers（调度器）的Base类，标准的实现有5种.
+
+
+
+### CoroutineDispatcher源码分析
+
+
+
+#### Key
+
+既然是自定义的Element那么总得有Key的
+
+```kotlin
+public companion object Key : AbstractCoroutineContextKey<ContinuationInterceptor, CoroutineDispatcher>(
+    ContinuationInterceptor,
+    { it as? CoroutineDispatcher })
+```
+
+这里选取的是抽象的。
+
+
+
+#### isDispatchNeeded
+
+> Returns `true` if the execution of the coroutine should be performed with [dispatch] method. The default behavior for most dispatchers is to return `true`.
+
+return true表明需要调度，也就是说是在线程池里面跑的。（简单来说就是问问你要不要放入任务队列）
+
+
+
+> If this method returns `false`, the coroutine is resumed immediately in the current thread
+
+return false表示不需要，会直接在当前线程resume。
+
+
+
+
+
+#### dispatch & dispatchYield
+
+这就是runnable入任务队列。
+
+
+
+
+
+#### interceptContinuation & release...
+
+```kotlin
+public final override fun <T> interceptContinuation(continuation: Continuation<T>): Continuation<T> =
+    DispatchedContinuation(this, continuation)
+
+public final override fun releaseInterceptedContinuation(continuation: Continuation<*>) {
+    /*
+     * Unconditional cast is safe here: we only return DispatchedContinuation from `interceptContinuation`,
+     * any ClassCastException can only indicate compiler bug
+     */
+    val dispatched = continuation as DispatchedContinuation<*>
+    dispatched.release()
+}
+```
+
+拦截即包装一层DispatchedContinuation，释放即通知DispatchedContinuation释放。
+
+
+
+
+
+#### plus
+
+plus被标记为了废弃，因为右边的会覆盖左边的，没有任何意义。会报错。
+
+![image-20220124164352529](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124164352529.png)
+
+
+
+
+
+
+
+
+
+## Dispatchers
+
+```kotlin
+public expect object Dispatchers {
+   
+    public val Default: CoroutineDispatcher
+
+    public val Main: MainCoroutineDispatcher
+
+    public val Unconfined: CoroutineDispatcher
+}
+```
+
+```kotlin
+public actual object Dispatchers {
+    @JvmStatic
+    public actual val Default: CoroutineDispatcher = createDefaultDispatcher()
+
+    @JvmStatic
+    public actual val Main: MainCoroutineDispatcher get() = MainDispatcherLoader.dispatcher
+
+    @JvmStatic
+    public actual val Unconfined: CoroutineDispatcher = kotlinx.coroutines.Unconfined
+
+    @JvmStatic
+    public val IO: CoroutineDispatcher = DefaultScheduler.IO
+}
+```
+
+JVM的实现类加入了一个IO，不过看这几个已近大致知道分析哪几个类了。
+
+
+
+
+
+### Default
+
+```kotlin
+public actual val Default: CoroutineDispatcher = DefaultScheduler
+```
+
+
+
+#### DefaultScheduler
+
+```kotlin
+internal object DefaultScheduler : SchedulerCoroutineDispatcher(
+    CORE_POOL_SIZE, MAX_POOL_SIZE,
+    IDLE_WORKER_KEEP_ALIVE_NS, DEFAULT_SCHEDULER_NAME
+) {
+    // Shuts down the dispatcher, used only by Dispatchers.shutdown()
+    internal fun shutdown() {
+        super.close()
+    }
+
+    // Overridden in case anyone writes (Dispatchers.Default as ExecutorCoroutineDispatcher).close()
+    override fun close() {
+        throw UnsupportedOperationException("Dispatchers.Default cannot be closed")
+    }
+
+    override fun toString(): String = "Dispatchers.Default"
+}
+```
+
+DefaultScheduler是一个SchedulerCoroutineDispatcher
+
+然后它是ExecutorCoroutineDispatcher的一个子类
+
+```kotlin
+internal open class SchedulerCoroutineDispatcher(
+    private val corePoolSize: Int = CORE_POOL_SIZE,
+    private val maxPoolSize: Int = MAX_POOL_SIZE,
+    private val idleWorkerKeepAliveNs: Long = IDLE_WORKER_KEEP_ALIVE_NS,
+    private val schedulerName: String = "CoroutineScheduler",
+) : ExecutorCoroutineDispatcher()
+```
+
+而ExecutorCoroutineDispatcher是一个抽象的Element（这架势一看就是线程池。）
+
+```kotlin
+public abstract class ExecutorCoroutineDispatcher: CoroutineDispatcher(), Closeable {
+    /** @suppress */
+    @ExperimentalStdlibApi
+    public companion object Key : AbstractCoroutineContextKey<CoroutineDispatcher, ExecutorCoroutineDispatcher>(
+        CoroutineDispatcher,
+        { it as? ExecutorCoroutineDispatcher })
+
+
+    public abstract val executor: Executor
+
+
+    public abstract override fun close()
+}
+```
+
+
+
+#### 线程池参数
+
+
+
+```kotlin
+internal val CORE_POOL_SIZE = systemProp(
+    "kotlinx.coroutines.scheduler.core.pool.size",
+    AVAILABLE_PROCESSORS.coerceAtLeast(2),
+    minValue = CoroutineScheduler.MIN_SUPPORTED_POOL_SIZE
+)
+```
+
+```kotlin
+internal val MAX_POOL_SIZE = systemProp(
+    "kotlinx.coroutines.scheduler.max.pool.size",
+    CoroutineScheduler.MAX_SUPPORTED_POOL_SIZE,
+    maxValue = CoroutineScheduler.MAX_SUPPORTED_POOL_SIZE
+)
+```
+
+```kotlin
+internal val IDLE_WORKER_KEEP_ALIVE_NS = TimeUnit.SECONDS.toNanos(
+    systemProp("kotlinx.coroutines.scheduler.keep.alive.sec", 60L)
+)
+```
+
+```kotlin
+internal const val DEFAULT_SCHEDULER_NAME = "DefaultDispatcher"
+```
+
+除了名字不能变其余都可以。
+
+
+
+#### 核心实现
+
+核心实现都交给了SchedulerCoroutineDispatcher
+
+然而它又丢锅给了coroutineScheduler，
+
+```kotlin
+private fun createScheduler() =
+    CoroutineScheduler(corePoolSize, maxPoolSize, idleWorkerKeepAliveNs, schedulerName)
+```
+
+```kotlin
+internal class CoroutineScheduler(
+    @JvmField val corePoolSize: Int,
+    @JvmField val maxPoolSize: Int,
+    @JvmField val idleWorkerKeepAliveNs: Long = IDLE_WORKER_KEEP_ALIVE_NS,
+    @JvmField val schedulerName: String = DEFAULT_SCHEDULER_NAME
+) : Executor, Closeable
+```
+
+而它就是个封装好的线程池。
+
+
+
+
+
+### Unconfined
+
+```kotlin
+public actual val Unconfined: CoroutineDispatcher = kotlinx.coroutines.Unconfined
+```
+
+```kotlin
+internal object Unconfined : CoroutineDispatcher() {
+
+    @ExperimentalCoroutinesApi
+    override fun limitedParallelism(parallelism: Int): CoroutineDispatcher {
+        throw UnsupportedOperationException("limitedParallelism is not supported for Dispatchers.Unconfined")
+    }
+
+    override fun isDispatchNeeded(context: CoroutineContext): Boolean = false
+
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        /** It can only be called by the [yield] function. See also code of [yield] function. */
+        val yieldContext = context[YieldContext]
+        if (yieldContext != null) {
+            // report to "yield" that it is an unconfined dispatcher and don't call "block.run()"
+            yieldContext.dispatcherWasUnconfined = true
+            return
+        }
+        throw UnsupportedOperationException("Dispatchers.Unconfined.dispatch function can only be used by the yield function. " +
+            "If you wrap Unconfined dispatcher in your code, make sure you properly delegate " +
+            "isDispatchNeeded and dispatch calls.")
+    }
+    
+    override fun toString(): String = "Dispatchers.Unconfined"
+}
+```
+
+关于它的描述只有一句话
+
+> A coroutine dispatcher that is not confined to any specific thread
+
+这玩意不是线程池。
+
+Dispatchers.Unconfined.dispatch function can only be used by the yield function.If you wrap Unconfined dispatcher in your code, make sure you properly delegate isDispatchNeeded and dispatch calls.
+
+他是为Yield而生的。
+
+
+
+
+
+### IO
+
+```kotlin
+public val IO: CoroutineDispatcher = DefaultIoScheduler
+```
+
+```kotlin
+internal object DefaultIoScheduler : ExecutorCoroutineDispatcher(), Executor {
+
+    private val default = UnlimitedIoScheduler.limitedParallelism(
+        systemProp(
+            IO_PARALLELISM_PROPERTY_NAME,
+            64.coerceAtLeast(AVAILABLE_PROCESSORS)
+        )
+    )
+
+    override val executor: Executor
+        get() = this
+
+    override fun execute(command: java.lang.Runnable) = dispatch(EmptyCoroutineContext, command)
+
+    @ExperimentalCoroutinesApi
+    override fun limitedParallelism(parallelism: Int): CoroutineDispatcher {
+        // See documentation to Dispatchers.IO for the rationale
+        return UnlimitedIoScheduler.limitedParallelism(parallelism)
+    }
+
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        default.dispatch(context, block)
+    }
+
+    @InternalCoroutinesApi
+    override fun dispatchYield(context: CoroutineContext, block: Runnable) {
+        default.dispatchYield(context, block)
+    }
+
+    override fun close() {
+        error("Cannot be invoked on Dispatchers.IO")
+    }
+
+    override fun toString(): String = "Dispatchers.IO"
+}
+```
+
+它委托给了一个线程池，然后这个线程池是LimitedDispatcher
+
+```kotlin
+public open fun limitedParallelism(parallelism: Int): CoroutineDispatcher {
+    parallelism.checkParallelism()
+    return LimitedDispatcher(this, parallelism)
+}
+```
+
+LimitedDispatcher又委托给了dispatcher
+
+```kotlin
+internal class LimitedDispatcher(
+    private val dispatcher: CoroutineDispatcher,
+    private val parallelism: Int
+) : CoroutineDispatcher(), Runnable, Delay by (dispatcher as? Delay ?: DefaultDelay)
+```
+
+所以锅给了UnlimitedIoScheduler
+
+然后它丢锅给了
+
+```kotlin
+@InternalCoroutinesApi
+override fun dispatchYield(context: CoroutineContext, block: Runnable) {
+    DefaultScheduler.dispatchWithContext(block, BlockingContext, true)
+}
+
+override fun dispatch(context: CoroutineContext, block: Runnable) {
+    DefaultScheduler.dispatchWithContext(block, BlockingContext, false)
+}
+```
+
+所以实际上还是DefaultScheduler
+
+
+
+
+
+
+
+
 
 
 

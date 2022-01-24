@@ -1,4 +1,4 @@
-package com.example.study.suspend.main
+package com.example.leading.suspend.main
 
 import kotlinx.coroutines.delay
 

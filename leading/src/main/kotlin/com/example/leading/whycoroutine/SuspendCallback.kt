@@ -17,9 +17,10 @@ suspend fun main() {
     testFun1()
     testFun1()
     testFun1()
-    Int.MIN_VALUE
 }
 
 suspend fun testFun1() {
+    println("before delay")
     delay(1000)
+    println("after delay")
 }
