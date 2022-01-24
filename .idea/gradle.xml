@@ -10,8 +10,12 @@
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
-            <option value="$PROJECT_DIR$/test1" />
-            <option value="$PROJECT_DIR$/test2" />
+            <option value="$PROJECT_DIR$/base" />
+            <option value="$PROJECT_DIR$/builder" />
+            <option value="$PROJECT_DIR$/context" />
+            <option value="$PROJECT_DIR$/framework" />
+            <option value="$PROJECT_DIR$/leading" />
+            <option value="$PROJECT_DIR$/stdlib" />
           </set>
         </option>
       </GradleProjectSettings>

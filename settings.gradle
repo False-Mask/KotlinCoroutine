@@ -1,4 +1,9 @@
 rootProject.name = 'CoroutineSource'
-include 'test1'
-include 'test2'
+
+include ':builder'
+include ':base'
+include ':framework'
+include ':context'
+include(":stdlib")
+include 'leading'
 
