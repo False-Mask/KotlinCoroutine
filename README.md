@@ -2846,7 +2846,7 @@ private fun startInternal(state: Any?): Int {
 ```kotlin
 private suspend fun awaitSuspend(): Any? = suspendCoroutineUninterceptedOrReturn { uCont ->
     /*
-     * Custom code here, so that parent coroutine that is using await
+     * Custom cold here, so that parent coroutine that is using await
      * on its child deferred (async) coroutine would throw the exception that this child had
      * thrown and not a JobCancellationException.
      */
@@ -4086,7 +4086,7 @@ internal object Unconfined : CoroutineDispatcher() {
     override fun isDispatchNeeded(context: CoroutineContext): Boolean = false
 
     override fun dispatch(context: CoroutineContext, block: Runnable) {
-        /** It can only be called by the [yield] function. See also code of [yield] function. */
+        /** It can only be called by the [yield] function. See also cold of [yield] function. */
         val yieldContext = context[YieldContext]
         if (yieldContext != null) {
             // report to "yield" that it is an unconfined dispatcher and don't call "block.run()"
@@ -4094,7 +4094,7 @@ internal object Unconfined : CoroutineDispatcher() {
             return
         }
         throw UnsupportedOperationException("Dispatchers.Unconfined.dispatch function can only be used by the yield function. " +
-            "If you wrap Unconfined dispatcher in your code, make sure you properly delegate " +
+            "If you wrap Unconfined dispatcher in your cold, make sure you properly delegate " +
             "isDispatchNeeded and dispatch calls.")
     }
     
@@ -4194,6 +4194,1265 @@ override fun dispatch(context: CoroutineContext, block: Runnable) {
 ```
 
 所以实际上还是DefaultScheduler
+
+
+
+
+
+
+
+# WithContext——Source
+
+> Time： 2022 -1-26
+
+withContext可以做到切换线程然后切换回来
+
+
+
+## 测试代码
+
+```kotlin
+fun main() {
+    GlobalScope.launch {
+        println(Thread.currentThread().name)
+        withContext(Dispatchers.IO){
+            delay(1000)
+        }
+        println(Thread.currentThread().name)
+    }
+    Thread.sleep(100000)
+}
+```
+
+执行结果
+
+> DefaultDispatcher-worker-1
+> DefaultDispatcher-worker-1
+
+
+
+## 执行流程分析
+
+
+
+### GlobalScope.launch
+
+```kotlin
+public fun CoroutineScope.launch(
+    context: CoroutineContext = EmptyCoroutineContext,
+    start: CoroutineStart = CoroutineStart.DEFAULT,
+    block: suspend CoroutineScope.() -> Unit
+): Job {
+    val newContext = newCoroutineContext(context)
+    val coroutine = if (start.isLazy)
+        LazyStandaloneCoroutine(newContext, block) else
+        StandaloneCoroutine(newContext, active = true)
+    coroutine.start(start, coroutine, block)
+    return coroutine
+}
+```
+
+加了一个newCoroutineContext 会确保CoroutineContext内部包含一个Dispatcher，如果没有Dispatcher，会默认添加一个Dispatchers.Default.
+
+然后new了一个StandaloneCoroutine
+
+然后通过start开启协程，最后调用了block.startCoroutineCancellable(completion)
+
+```kotlin
+public fun <T> (suspend () -> T).startCoroutineCancellable(completion: Continuation<T>): Unit = runSafely(completion) {
+    createCoroutineUnintercepted(completion).intercepted().resumeCancellableWith(Result.success(Unit))
+}
+```
+
+createCoroutineUnintercepted确保了挂起函数具备挂起和恢复的能力，如果不具备会在外面包裹一层continuationImpl。
+
+然后拦截。
+
+```kotlin
+public actual fun <T> Continuation<T>.intercepted(): Continuation<T> =
+    (this as? ContinuationImpl)?.intercepted() ?: this
+
+public fun intercepted(): Continuation<Any?> =
+        intercepted
+            ?: (context[ContinuationInterceptor]?.interceptContinuation(this) ?: this)
+                .also { intercepted = it }
+```
+
+这段代码之前点开很多次。but以前不明白到底干了啥，现在知道了。Dispatcher.Default是DefaultScheduler是CoroutineDispatcher
+
+```kotlin
+public final override fun <T> interceptContinuation(continuation: Continuation<T>): Continuation<T> =
+    DispatchedContinuation(this, continuation)
+```
+
+这下明了了，原来是包裹了一层DispatchedContinuation
+
+
+
+然后resumeCancellableWith(Result.success(Unit))
+
+```kotlin
+public fun <T> Continuation<T>.resumeCancellableWith(
+    result: Result<T>,
+    onCancellation: ((cause: Throwable) -> Unit)? = null
+): Unit = when (this) {
+    is DispatchedContinuation -> resumeCancellableWith(result, onCancellation)
+    else -> resumeWith(result)
+}
+```
+
+
+
+```kotlin
+inline fun resumeCancellableWith(
+    result: Result<T>,
+    noinline onCancellation: ((cause: Throwable) -> Unit)?
+) {
+    val state = result.toState(onCancellation)
+    if (dispatcher.isDispatchNeeded(context)) {
+        _state = state
+        resumeMode = MODE_CANCELLABLE
+        dispatcher.dispatch(context, this)
+    } else {
+        executeUnconfined(state, MODE_CANCELLABLE) {
+            if (!resumeCancelled(state)) {
+                resumeUndispatchedWith(result)
+            }
+        }
+    }
+}
+```
+
+肯定会进入if 因为CoroutineDispatcher默认是直接返回true，然后调用了dispatch，这里dispatcher是Dispatchers.Default。（具体的实现在CoroutineScheduler）
+
+1.6.0和1.5.X的实现或许有些不同
+
+```kotlin
+fun dispatch(block: Runnable, taskContext: TaskContext = NonBlockingContext, tailDispatch: Boolean = false) {
+    trackTask() // this is needed for virtual time support
+    val task = createTask(block, taskContext)
+    // try to submit the task to the local queue and act depending on the result
+    val currentWorker = currentWorker()
+    val notAdded = currentWorker.submitToLocalQueue(task, tailDispatch)
+    if (notAdded != null) {
+        if (!addToGlobalQueue(notAdded)) {
+            // Global queue is closed in the last step of close/shutdown -- no more tasks should be accepted
+            throw RejectedExecutionException("$schedulerName was terminated")
+        }
+    }
+    val skipUnpark = tailDispatch && currentWorker != null
+    // Checking 'task' instead of 'notAdded' is completely okay
+    if (task.mode == TASK_NON_BLOCKING) {
+        if (skipUnpark) return
+        signalCpuWork()
+    } else {
+        // Increment blocking tasks anyway
+        signalBlockingWork(skipUnpark = skipUnpark)
+    }
+}
+```
+
+这里它直接放入任务队列了。
+
+
+
+### withContext
+
+```kotlin
+public suspend fun <T> withContext(
+    context: CoroutineContext,
+    block: suspend CoroutineScope.() -> T
+): T {
+    contract {
+        callsInPlace(block, InvocationKind.EXACTLY_ONCE)
+    }
+    return suspendCoroutineUninterceptedOrReturn sc@ { uCont ->
+        // compute new context
+        val oldContext = uCont.context
+        val newContext = oldContext + context
+        // always check for cancellation of new context
+        newContext.ensureActive()
+        // FAST PATH #1 -- new context is the same as the old one
+        if (newContext === oldContext) {
+            val coroutine = ScopeCoroutine(newContext, uCont)
+            return@sc coroutine.startUndispatchedOrReturn(coroutine, block)
+        }
+        // FAST PATH #2 -- the new dispatcher is the same as the old one (something else changed)
+        // `equals` is used by design (see equals implementation is wrapper context like ExecutorCoroutineDispatcher)
+        if (newContext[ContinuationInterceptor] == oldContext[ContinuationInterceptor]) {
+            val coroutine = UndispatchedCoroutine(newContext, uCont)
+            // There are changes in the context, so this thread needs to be updated
+            withCoroutineContext(newContext, null) {
+                return@sc coroutine.startUndispatchedOrReturn(coroutine, block)
+            }
+        }
+        // SLOW PATH -- use new dispatcher
+        val coroutine = DispatchedCoroutine(newContext, uCont)
+        block.startCoroutineCancellable(coroutine, coroutine)
+        coroutine.getResult()
+    }
+}
+```
+
+立即拦截当前的Continuation，然后new一个context，进行了判断。
+
+两条fast path，
+
+- 一newContext和oldContext一致。
+- 二他们context不一致but他们的调度器一致。
+
+有共同点就是他们的调度器一致，也就是是他们运行的线程池，又或说他们运行的线程是一致的。所以没必要进行线程的切换。
+
+所以它直接要门直接运行（环境一致），要么在当前线程运行，but会在给定的上下文运行（调度器一致但是Context中有其他不一致的东西）。
+
+```kotlin
+val coroutine = DispatchedCoroutine(newContext, uCont)
+block.startCoroutineCancellable(coroutine, coroutine)
+coroutine.getResult()
+```
+
+满路径就没办法了，因为必须切线程所以new了一个DispatchedCoroutine
+
+然后调用了它的核心的一点就是它这里套了一层DispatchedCoroutine也就是说他把自己的执行环境保存了下来。这样经过调用startCoroutineCancellable包装一层DispatchedContinuation这样就在DispatchedCoroutine中跑起来了。
+
+然后等任务结束以后，又到了GlobalScope的DispatchedContinuation里面执行。这样就完成了一次线程切换。
+
+
+
+
+
+# Flow
+
+
+
+## 使用
+
+Flow是非阻塞的
+
+```kotlin
+fun simple() = flow<Int>{
+    repeat(3){
+        delay(300)
+        emit(it)
+    }
+}
+
+fun main(): Unit = runBlocking {
+    launch {
+        repeat(10){
+            println("I am not blocked")
+            delay(100)
+        }
+    }
+    simple().collect {
+        println("get:${it}")
+    }
+}
+```
+
+> I am not blocked
+> I am not blocked
+> I am not blocked
+> get:0
+> I am not blocked
+> I am not blocked
+> I am not blocked
+> get:1
+> I am not blocked
+> I am not blocked
+> I am not blocked
+> get:2
+> I am not blocked
+>
+> Process finished with exit code 0
+
+
+
+Flow可以用flow来构建
+
+
+
+### flow是冷流
+
+```kotlin
+fun main() {
+    simple()
+}
+
+fun simple() = flow<Int> {
+    repeat(10){
+        println("emit $it")
+        emit(it)
+        delay(1000)
+    }
+}
+```
+
+什么都没打印
+
+
+
+
+
+### 流的取消
+
+```kotlin
+fun main(): Unit = runBlocking {
+    withTimeoutOrNull(1000){
+        flow<Int> {
+            repeat(20){
+                delay(100)
+                emit(it)
+            }
+        }.collect {
+            println(it)
+        }
+    }
+}
+```
+
+
+
+withTimeOutOrNull执行给定时间后取消
+
+
+
+### 流的构建器
+
+
+
+- asFlow
+- flow
+
+
+
+### 转化器
+
+```kotlin
+fun main(): Unit = runBlocking {
+    flow<Int> {
+        emit(1)
+        emit(2)
+        emit(3)
+    }
+        .transform {
+            emit(it.toString())
+        }.collect {
+            println(it)
+        }
+}
+```
+
+```kotlin
+flow<Int> { 
+    emit(1)
+}.map { 
+    it.toString()
+}.collect {
+    println(it)
+}
+```
+
+
+
+### 其他
+
+- take
+- reduce/collect(末端操作符)
+
+
+
+### 流的上下文
+
+```kotlin
+fun main():Unit = runBlocking {
+    withContext(coroutineContext){
+        simple().collect {
+            println(it)
+        }
+    }
+}
+
+fun simple() = flow<Int> {
+    repeat(100){
+        emit(it)
+    }
+}
+```
+
+流的上下文默认是在collect的协程
+
+
+
+flow的内部是不允许切换的
+
+```kotlin
+fun simple(): Flow<Int> = flow {
+    // 在流构建器中更改消耗 CPU 代码的上下文的错误方式
+    withContext(Dispatchers.Default) {
+        for (i in 1..3) {
+            Thread.sleep(100) // 假装我们以消耗 CPU 的方式进行计算
+            emit(i) // 发射下一个值
+        }
+    }
+}
+
+fun main() = runBlocking<Unit> {
+    simple().collect { value -> println(value) }
+}
+```
+
+这样会直接抛出一个异常
+
+
+
+### flowOn
+
+flowOn可以改变flow的发送的协程即emit的协程
+
+```kotlin
+fun main(): Unit = runBlocking {
+    simple().flowOn(Dispatchers.Default).collect {
+        println(Thread.currentThread().name)
+    }
+}
+
+fun simple() = flow<Int> {
+    repeat(100) {
+        delay(1000)
+        println(Thread.currentThread().name)
+        emit(it)
+    }
+}
+```
+
+
+
+###  缓冲
+
+```kotlin
+fun main(): Unit = runBlocking {
+    simple().flowOn(Dispatchers.Default).collect {
+        println(Thread.currentThread().name)
+    }
+}
+
+fun simple() = flow<Int> {
+    repeat(100) {
+        delay(1000)
+        println(Thread.currentThread().name)
+        emit(it)
+    }
+}
+```
+
+默认的情况下缓冲的数量是64，缓冲的策略是挂起。
+
+
+
+
+
+### 合并
+
+conflat
+
+```kotlin
+fun simple() = flow<Int> {
+    repeat(3) {
+        delay(100)
+        emit(it)
+    }
+}.conflate()
+
+fun main() = runBlocking {
+    simple()
+        .collect {
+            delay(300)
+            println("get ${it}")
+        }
+}
+```
+
+哪取了最新的值。
+
+
+
+
+
+
+
+### collectLast
+
+```kotlin
+fun simple() = flow<Int> {
+    repeat(10){
+        delay(100)
+        emit(it)
+    }
+}
+
+
+fun main():Unit = runBlocking {
+    simple()
+        .collectLatest {
+            delay(300)
+            println(it)
+        }
+}
+```
+
+
+
+### zip
+
+zip可用于组合两个流中的值
+
+和rxjava的zip类似
+
+
+
+### combine
+
+combine类似于zip是一种组合，但是不一样的是他是直接合并当前还存在的值而不用一只等待。
+
+
+
+### flatMapConcat
+
+展开流，不过是顺序展开
+
+```kotlin
+fun main(): Unit = runBlocking {
+    flow<Int> {
+        repeat(10) {
+            delay(1000)
+            emit(it)
+        }
+    }
+        .flatMapConcat {
+            produceFlow(it)
+        }
+        .collect {
+            println(it)
+        }
+}
+
+
+fun produceFlow(value: Int) = flow<String> {
+    repeat(10) {
+        delay(1000)
+        emit(value.toString() + it.toString())
+    }
+}
+```
+
+### flatMapMerge
+
+并行发送，保证内容发送出去了，但是不一定有序
+
+### flatMapLastest
+
+```kotlin
+fun main(): Unit = runBlocking {
+    flow<Int> {
+        repeat(10) {
+            emit(it)
+            delay(100)
+        }
+    }
+        .flatMapLatest{
+            produceFlow(it)
+        }
+        .collect {
+            println(it)
+        }
+}
+
+
+fun produceFlow(value: Int) = flow<String> {
+    repeat(10) {
+        delay(1000)
+        emit(value.toString() + it.toString())
+    }
+}
+```
+
+同样是把值进行合并，但是有些不同的是，它如果接受到了下一个值，就会把上一个给取消。
+
+
+
+### catch
+
+```kotlin
+flow<Int> {
+    emit(1)
+    emit(0)
+    repeat(10) {
+        emit(it + 1)
+    }
+}
+    .map {
+        1 / it
+    }
+    .catch { e ->
+        println("error: ${e}")
+        emit(1)
+    }
+    .collect {
+        println("suscess:$it")
+    }
+```
+
+catch捕捉上游异常
+
+
+
+### onComplete
+
+
+
+
+
+### launchIn
+
+
+
+### 流的取消
+
+对于繁忙的任务(CPU密集型)的任务，它或者只是单纯的阻塞住了，所以挂起这一特性无法对他进行取消。
+
+这时候就可以利用
+
+.cancellable()
+
+
+
+## Source
+
+> Time：2022-1-28
+
+flow和RxJava在用法上是类似的。
+
+那么他们在设计上是否是类似的呢？
+
+我的答案是神似。
+
+
+
+### 测试代码
+
+```kotlin
+flow<Int> {
+    println("producer:" + Thread.currentThread().name)
+    emit(1)
+    println("producer:" + Thread.currentThread().name)
+    emit(2)
+}
+    .map {
+        it
+    }
+    .map {
+        it
+    }
+    .map {
+        it
+    }
+    .collect {
+        println("collect")
+    }
+```
+
+
+
+### flow
+
+```kotlin
+public fun <T> flow(@BuilderInference block: suspend FlowCollector<T>.() -> Unit): Flow<T> = SafeFlow(block)
+```
+
+将传入的高阶函数进行包裹。new了一个新的Flow对象
+
+
+
+### map
+
+```kotlin
+public inline fun <T, R> Flow<T>.map(crossinline transform: suspend (value: T) -> R): Flow<R> = transform { value ->
+   return@transform emit(transform(value))
+}
+```
+
+```kotlin
+internal inline fun <T, R> Flow<T>.unsafeTransform(
+    @BuilderInference crossinline transform: suspend FlowCollector<R>.(value: T) -> Unit
+): Flow<R> = unsafeFlow { // Note: unsafe flow is used here, because unsafeTransform is only for internal use
+    collect { value ->
+        // kludge, without it Unit will be returned and TCE won't kick in, KT-28938
+        return@collect transform(value)
+    }
+}
+```
+
+```kotlin
+internal inline fun <T> unsafeFlow(@BuilderInference crossinline block: suspend FlowCollector<T>.() -> Unit): Flow<T> {
+    return object : Flow<T> {
+        override suspend fun collect(collector: FlowCollector<T>) {
+            collector.block()
+        }
+    }
+}
+```
+
+所以最后就是new了一个Flow返回。
+
+
+
+### collect
+
+```kotlin
+public suspend inline fun <T> Flow<T>.collect(crossinline action: suspend (value: T) -> Unit): Unit =
+    collect(object : FlowCollector<T> {
+        override suspend fun emit(value: T) = action(value)
+    })
+```
+
+调用了Flow的collect方法。
+
+
+
+
+
+### 流程分析
+
+首先完成构建，然后进行collect。
+
+but，好像思路断了。感觉仅仅这样的话好像还真的完成不了流式的api调用。实际上是可以的，我们可以好好审视一下collect
+
+
+
+```kotlin
+collect(object : FlowCollector<T> {
+        override suspend fun emit(value: T) = action(value)
+    })
+```
+
+collect有调用了collect，也就是this.collect,
+
+而this是Flow，它是在map的时候new的
+
+```kotlin
+internal inline fun <T> unsafeFlow(@BuilderInference crossinline block: suspend FlowCollector<T>.() -> Unit): Flow<T> {
+    return object : Flow<T> {
+        override suspend fun collect(collector: FlowCollector<T>) {
+            collector.block()
+        }
+    }
+}
+```
+
+找到了它直接调用了外出的block，然后我们继续跟踪
+
+```kotlin
+unsafeFlow { // Note: unsafe flow is used here, because unsafeTransform is only for internal use
+    collect { value ->
+        // kludge, without it Unit will be returned and TCE won't kick in, KT-28938
+        return@collect transform(value)
+    }
+}
+```
+
+然后它有调用了collect，递归是吧。
+
+ok我懂。
+
+然后呢到了最顶层的flow了。
+
+
+
+```kotlin
+private class SafeFlow<T>(private val block: suspend FlowCollector<T>.() -> Unit) : AbstractFlow<T>() {
+    override suspend fun collectSafely(collector: FlowCollector<T>) {
+        collector.block()
+    }
+}
+```
+
+SafeFlow好像是没有collect呢，不急它的collect被覆写了。
+
+```kotlin
+public final override suspend fun collect(collector: FlowCollector<T>) {
+    val safeCollector = SafeCollector(collector, coroutineContext)
+    try {
+        collectSafely(safeCollector)
+    } finally {
+        safeCollector.releaseIntercepted()
+    }
+}
+```
+
+在collector上包裹了一层SafeCollector，然后调用了collectSafely...
+
+然后flow这个lambda被执行了。
+
+```kotlin
+flow<Int> {
+    println("producer:" + Thread.currentThread().name)
+    emit(1)
+    println("producer:" + Thread.currentThread().name)
+    emit(2)
+}
+```
+
+然后执行到了emit，emit嗯。
+
+这个emit调用的是collector的。
+
+这个collector是SafeCollector，
+
+```kotlin
+override suspend fun emit(value: T) {
+    return suspendCoroutineUninterceptedOrReturn sc@{ uCont ->
+        try {
+            emit(uCont, value)
+        } catch (e: Throwable) {
+            // Save the fact that exception from emit (or even check context) has been thrown
+            lastEmissionContext = DownstreamExceptionElement(e)
+            throw e
+        }
+    }
+}
+```
+
+
+
+```kotlin
+private fun emit(uCont: Continuation<Unit>, value: T): Any? {
+    val currentContext = uCont.context
+    currentContext.ensureActive()
+    // This check is triggered once per flow on happy path.
+    val previousContext = lastEmissionContext
+    if (previousContext !== currentContext) {
+        checkContext(currentContext, previousContext, value)
+    }
+    completion = uCont
+    return emitFun(collector as FlowCollector<Any?>, value, this as Continuation<Unit>)
+}
+```
+
+调用到了emit(uCont: Continuation<Unit>, value: T)然后调用了emitFun
+
+emitFun?
+
+```kotlin
+private val emitFun =
+    FlowCollector<Any?>::emit as Function3<FlowCollector<Any?>, Any?, Continuation<Unit>, Any?>
+```
+
+
+
+乍一看好像什么头绪都没，但是你看它的参数你就知道了，也就是一函数类型的。
+
+再看它的调用处。
+
+```kotlin
+emitFun(collector as FlowCollector<Any?>, value, this as Continuation<Unit>)
+```
+
+感觉就是直接调用了collector.emit，说实话我不是很懂为啥它不直接collector.emit.
+
+然后跑到了下游的emit中去了，而下游的collector实在collect的时候new出来了的。
+
+```kotlin
+collect(object : FlowCollector<T> {
+    override suspend fun emit(value: T) = action(value)
+})
+```
+
+这样说下游的emit就是这个了，调用了一个高阶函数
+
+层层外传，最后就调用了这里
+
+```kotlin
+public inline fun <T, R> Flow<T>.map(crossinline transform: suspend (value: T) -> R): Flow<R> = transform { value ->
+   return@transform emit(transform(value))
+}
+```
+
+执行了map的lambda然后又调用了下层的emit。
+
+
+
+
+
+### 总结
+
+Flow的流式api的实现比较简单，它利用了扩展函数在collect得时候建立订阅关系，然后从最上游，开始一级级地先下游发送事件。这样就达到了rxjava流式api的效果。
+
+
+
+
+
+![Flow.drawio](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/Flow.drawio.png)
+
+
+
+
+
+# Channel
+
+> Time：2022-1-30
+
+channel是通道，说通道或许过于陌生，但是如果说是阻塞队列或许就熟悉些。
+
+延期的值提供了一种便捷的方法使单个值在多个协程之间进行相互传输。 通道提供了一种在流中传输值的方法。
+
+## 使用
+
+send/receive
+
+```kotlin
+fun main(): Unit = runBlocking {
+    val channel = Channel<Int>()
+    launch {
+        for (x in 1..10){
+            channel.send(x)
+        }
+    }
+
+    repeat(10){
+        println(channel.receive())
+    }
+    println("Done")
+}
+```
+
+
+
+### 迭代/关闭 Channel
+
+```kotlin
+fun main(): Unit = runBlocking {
+    val channel = Channel<Int>()
+    launch {
+        for (x in 1..10) {
+            channel.send(x)
+        }
+        channel.close()
+    }
+
+    for (element in channel) {
+        println(element)
+    }
+
+    println("Done")
+}
+```
+
+
+
+### producer/consumer
+
+```kotlin
+fun main(): Unit = runBlocking {
+    val receiveChannel = produce<Int> {
+        repeat(10) { send(it) }
+    }
+
+    receiveChannel.consumeEach {
+        println(it)
+    }
+}
+```
+
+
+
+### 带有缓冲通道的通道
+
+这里设置bufferSize为10也就是说发送的数据会先进入这个缓冲队列中，如果缓存队列没有满就不会把它给阻塞掉。（如果把bufferSize改成9个这就会直接挂起，或者发送数据数目改成11个。）
+
+```kotlin
+fun main(): Unit = runBlocking {
+    val channel = Channel<Int>(10)
+    repeat(10) {
+        channel.send(it)
+    }
+    channel.close()
+    println("send finish")
+    for (i in channel) {
+        println(i)
+    }
+}
+```
+
+
+
+### ticker
+
+计时器
+
+```kotlin
+fun main(): Unit = runBlocking {
+    val ticker = ticker(100, 0)
+    var nextElement = withTimeoutOrNull(1) { println(ticker.receive()) }
+    nextElement = withTimeoutOrNull(50) { println(ticker.receive()) }
+    withTimeoutOrNull(50) { println(ticker.receive()) }
+}
+```
+
+这个计时器，先发送一个初始值，然后依据间隔发送值（Unit）。初始值得发送时间和间隔得发送时间都是可以自定义的。
+
+
+
+## Channel——Source
+
+
+
+### 测试代码
+
+```kotlin
+fun main():Unit = runBlocking {
+    val chan = Channel<Int>()
+    launch {
+        for (i in 0..9){
+            delay(100)
+            chan.send(i)
+        }
+        chan.close()
+    }
+    launch {
+        repeat(10){
+            println(chan.receive())
+        }
+    }
+}
+```
+
+
+
+### 流程分析
+
+channel属于是一个接口
+
+```kotlin
+public interface Channel<E> : SendChannel<E>, ReceiveChannel<E>
+```
+
+一个具有sendChannel实现和ReceiveChannel实现的接口。也就是说既可以接受数据，也可以发送数据。（其实分析的核心也就这两个函数）
+
+
+
+#### channel创建
+
+测试代码是使用Channel来创建的 。
+
+```kotlin
+public fun <E> Channel(
+    capacity: Int = RENDEZVOUS,
+    onBufferOverflow: BufferOverflow = BufferOverflow.SUSPEND,
+    onUndeliveredElement: ((E) -> Unit)? = null
+): Channel<E> =
+    when (capacity) {
+        RENDEZVOUS -> {
+            if (onBufferOverflow == BufferOverflow.SUSPEND)
+                RendezvousChannel(onUndeliveredElement) // an efficient implementation of rendezvous channel
+            else
+                ArrayChannel(1, onBufferOverflow, onUndeliveredElement) // support buffer overflow with buffered channel
+        }
+        CONFLATED -> {
+            require(onBufferOverflow == BufferOverflow.SUSPEND) {
+                "CONFLATED capacity cannot be used with non-default onBufferOverflow"
+            }
+            ConflatedChannel(onUndeliveredElement)
+        }
+        UNLIMITED -> LinkedListChannel(onUndeliveredElement) // ignores onBufferOverflow: it has buffer, but it never overflows
+        BUFFERED -> ArrayChannel( // uses default capacity with SUSPEND
+            if (onBufferOverflow == BufferOverflow.SUSPEND) CHANNEL_DEFAULT_CAPACITY else 1,
+            onBufferOverflow, onUndeliveredElement
+        )
+        else -> {
+            if (capacity == 1 && onBufferOverflow == BufferOverflow.DROP_OLDEST)
+                ConflatedChannel(onUndeliveredElement) // conflated implementation is more efficient but appears to work in the same way
+            else
+                ArrayChannel(capacity, onBufferOverflow, onUndeliveredElement)
+        }
+    }
+```
+
+肉眼可见它进行了一些的适配
+
+这里我们使用了默认，所以会直接返回一个RendezvousChannel
+
+这玩意只是一个AbstractChannel的实现类。代码呢都还在抽象类里面。
+
+```kotlin
+internal open class RendezvousChannel<E>(onUndeliveredElement: OnUndeliveredElement<E>?) : AbstractChannel<E>(onUndeliveredElement) {
+    protected final override val isBufferAlwaysEmpty: Boolean get() = true
+    protected final override val isBufferEmpty: Boolean get() = true
+    protected final override val isBufferAlwaysFull: Boolean get() = true
+    protected final override val isBufferFull: Boolean get() = true
+}
+```
+
+#### send
+
+```kotlin
+public final override suspend fun send(element: E) {
+    // fast path -- try offer non-blocking
+    if (offerInternal(element) === OFFER_SUCCESS) return
+    // slow-path does suspend or throws exception
+    return sendSuspend(element)
+}
+```
+
+send的代码不多，这段是拿取任务队列的数据，如果拿到了，就把element传入然后resume了receive。
+
+```kotlin
+protected open fun offerInternal(element: E): Any {
+    while (true) {
+        val receive = takeFirstReceiveOrPeekClosed() ?: return OFFER_FAILED
+        val token = receive.tryResumeReceive(element, null)
+        if (token != null) {
+            assert { token === RESUME_TOKEN }
+            receive.completeResumeReceive(element)
+            return receive.offerResult
+        }
+    }
+}
+```
+
+没在任务队列里面拿到东西就就把自己挂起，放入任务队列。
+
+```kotlin
+private suspend fun sendSuspend(element: E): Unit = suspendCancellableCoroutineReusable sc@ { cont ->
+    loop@ while (true) {
+        if (isFullImpl) {
+            val send = if (onUndeliveredElement == null)
+                SendElement(element, cont) else
+                SendElementWithUndeliveredHandler(element, cont, onUndeliveredElement)
+            val enqueueResult = enqueueSend(send)
+            when {
+                enqueueResult == null -> { // enqueued successfully
+                    cont.removeOnCancellation(send)
+                    return@sc
+                }
+                enqueueResult is Closed<*> -> {
+                    cont.helpCloseAndResumeWithSendException(element, enqueueResult)
+                    return@sc
+                }
+                enqueueResult === ENQUEUE_FAILED -> {} // try to offer instead
+                enqueueResult is Receive<*> -> {} // try to offer instead
+                else -> error("enqueueSend returned $enqueueResult")
+            }
+        }
+        // hm... receiver is waiting or buffer is not full. try to offer
+        val offerResult = offerInternal(element)
+        when {
+            offerResult === OFFER_SUCCESS -> {
+                cont.resume(Unit)
+                return@sc
+            }
+            offerResult === OFFER_FAILED -> continue@loop
+            offerResult is Closed<*> -> {
+                cont.helpCloseAndResumeWithSendException(element, offerResult)
+                return@sc
+            }
+            else -> error("offerInternal returned $offerResult")
+        }
+    }
+}
+```
+
+
+
+
+
+
+
+#### receive
+
+```kotlin
+public final override suspend fun receive(): E {
+    // fast path -- try poll non-blocking
+    val result = pollInternal()
+
+    @Suppress("UNCHECKED_CAST")
+    if (result !== POLL_FAILED && result !is Closed<*>) return result as E
+    // slow-path does suspend
+    return receiveSuspend(RECEIVE_THROWS_ON_CLOSE)
+}
+```
+
+代码不多，先调用了pollInternal去拿队列里面的元素。
+
+```kotlin
+protected open fun pollInternal(): Any? {
+    while (true) {
+        val send = takeFirstSendOrPeekClosed() ?: return POLL_FAILED
+        val token = send.tryResumeSend(null)
+        if (token != null) {
+            assert { token === RESUME_TOKEN }
+            send.completeResumeSend()
+            return send.pollResult
+        }
+     
+        send.undeliveredElement()
+    }
+}
+```
+
+如果没有调用send的话这里会返回一个null，就直接返回了，然后如果不为空，就会在这个send里面加receive，等send去invoke suspend。
+
+好吧先回到队列为空的情况看看，它退出了函数。调用了receiveSuspend(RECEIVE_THROWS_ON_CLOSE)
+
+```kotlin
+private suspend fun <R> receiveSuspend(receiveMode: Int): R = suspendCancellableCoroutineReusable sc@ { cont ->
+    val receive = if (onUndeliveredElement == null)
+        ReceiveElement(cont as CancellableContinuation<Any?>, receiveMode) else
+        ReceiveElementWithUndeliveredHandler(cont as CancellableContinuation<Any?>, receiveMode, onUndeliveredElement)
+    while (true) {
+        if (enqueueReceive(receive)) {
+            removeReceiveOnCancel(cont, receive)
+            return@sc
+        }
+        // hm... something is not right. try to poll
+        val result = pollInternal()
+        if (result is Closed<*>) {
+            receive.resumeReceiveClosed(result)
+            return@sc
+        }
+        if (result !== POLL_FAILED) {
+            cont.resume(receive.resumeValue(result as E), receive.resumeOnCancellationFun(result as E))
+            return@sc
+        }
+    }
+}
+```
+
+干了啥？也就是直接new了一个element入队列，会发现好像send和receive的逻辑是一样的。
+
+```kotlin
+protected open fun enqueueReceiveInternal(receive: Receive<E>): Boolean = if (isBufferAlwaysEmpty)
+    queue.addLastIfPrev(receive) { it !is Send } else
+    queue.addLastIfPrevAndIf(receive, { it !is Send }, { isBufferEmpty })
+```
+
+
+
+
+
+### 小结
+
+- Channel内有两个基础的概念一个就是消费着，一个是生产者。分别对应receive和send。它的实现其实很类似于一个阻塞队列（不阻塞的阻塞队列。。
+
+- Channel内部有一个queue来保存生产者的生产信号和消费者的消费信号。
+
+- 对于send，他会去拿队列里面的receive（消费信号），分两种情况一种是拿到了，一种没拿到。
+  - 拿到了就把需要生产的值直接resume receive。
+  - 如果没拿到那就把消费信号放入到队列中，等消费者来拿。然后挂起。
+- 对于receive，类似的，他去拿send信号，也分两种情况
+  - 如果拿到了就resume send
+  - 如果没拿到就把receive信号放入到队列中，等待生产者来取。
+- 所以对于send和receive来说都是先拿取信号。然后分两种情况，拿到了就invoke suspend，没拿到就把自己放入任务队列等待对方invoke自己。就相互invoke suspend呗
 
 
 
@@ -4870,6 +6129,10 @@ internal abstract class RestrictedSuspendLambda(
 ```
 
 和前面的RestrictedContinuationImpl差不多。
+
+
+
+
 
 
 

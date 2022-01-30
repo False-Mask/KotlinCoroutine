@@ -9,18 +9,22 @@ import kotlinx.coroutines.flow.*
  */
 suspend fun main() {
     flow<Int> {
-        println("producer:"+Thread.currentThread().name)
+        println("producer:" + Thread.currentThread().name)
         emit(1)
-        println("producer:"+Thread.currentThread().name)
+        println("producer:" + Thread.currentThread().name)
         emit(2)
     }
-        //.flowOn(Dispatchers.IO)
-        .onEach {
-            println("consumer:$it")
-            println("consumer:"+Thread.currentThread().name)
+        .map {
+            it
         }
-        .collect {  }
-        //.launchIn(CoroutineScope(Dispatchers.Default))
-        //.join()
+        .map {
+            it
+        }
+        .map {
+            it
+        }
+        .collect {
+            println("collect")
+        }
 
 }
