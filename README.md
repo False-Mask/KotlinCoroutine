@@ -298,7 +298,7 @@ decompile一下看看
 
 瞧瞧我发现了什么东西。
 
-![image-20220114110336580](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220114110336580.png)
+![image-20220114110336580](http://114.116.23.72/images/2022/11/08/image-20220114110336580.png)
 
 有兴趣的可以在suspend main里面多调用几次testFun1，调用个七八十次就更明显了，这回调嵌套想想都恐怖。
 
@@ -310,13 +310,13 @@ decompile一下看看
 
 刚进入的时候
 
-![image-20220114111308899](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220114111308899.png)
+![image-20220114111308899](http://114.116.23.72/images/2022/11/08/image-20220114111308899.png)
 
 初始化continuation
 
 这是Continuation
 
-![image-20220114111627897](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220114111627897.png)
+![image-20220114111627897](http://114.116.23.72/images/2022/11/08/image-20220114111627897.png)
 
 很有意思好吧
 
@@ -326,7 +326,7 @@ decompile一下看看
 
 - invokeSuspend就更有意思了。你会发现invokeSuspend需要把result传入，啥意思，比如我suspend main 调用了一个挂起函数add进行1+1的数学运算（CPU密集型任务嘛，/狗头），add会先挂起suspend main，然后等计算完成以后，就会去调用invokeSuspend，使得suspend main恢复执行，这个$result就是add的执行结果2。然后分析一下函数体，先进行了结果的存储，然后欸label与Integer.MIN_VALUE（最高位为1，31个0）或了一下。也就是说label变为了Integer.MIN_VALUE+label，最后一句就有意思了，把this传入，然后调用本方法。**发现了嘛，恢复的本质其实是重新调用被挂起的方法。**恢复的时候就会执行前面if的内容了。
 
-  ![image-20220114153938739](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220114153938739.png)
+  ![image-20220114153938739](http://114.116.23.72/images/2022/11/08/image-20220114153938739.png)
 
   这样就避免了重复new ContinuationImpl。
 
@@ -336,7 +336,7 @@ decompile一下看看
 
 函数体被编译器编译成了一个类似于洋葱的结构，一层套一层的标签
 
-![image-20220114154651459](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220114154651459.png)
+![image-20220114154651459](http://114.116.23.72/images/2022/11/08/image-20220114154651459.png)
 
 好开始分析，
 
@@ -440,7 +440,7 @@ public class SuspendBody {
 
 流程图如下
 
-![coroutineSuspend.drawio](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/coroutineSuspend.drawio.png)
+![coroutineSuspend.drawio](http://114.116.23.72/images/2022/11/08/coroutineSuspend.drawio.png)
 
 
 
@@ -644,7 +644,7 @@ Object var10000 = a((Function1)(new Function1((Continuation)null) {
 
 生成了3个类
 
-![image-20220124135221777](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124135221777.png)
+![image-20220124135221777](http://114.116.23.72/images/2022/11/08/image-20220124135221777.png)
 
 
 
@@ -654,11 +654,11 @@ Object var10000 = a((Function1)(new Function1((Continuation)null) {
 
 suspend main中调用了挂起函数a，然后挂起函数根据对应的continuation，invoke了这个suspend lambda。
 
-![image-20220124135648236](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124135648236.png)
+![image-20220124135648236](http://114.116.23.72/images/2022/11/08/image-20220124135648236.png)
 
 SuspendLambda，很奇怪的是挂起函数体被单独抽离出来了，变成了一个类，在invoke的时候调用create新的实例。
 
-![image-20220124140003562](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124140003562.png)
+![image-20220124140003562](http://114.116.23.72/images/2022/11/08/image-20220124140003562.png)
 
 
 
@@ -893,7 +893,7 @@ suspend fun a(){
 
 编译了挺多东西的
 
-![image-20220116091043305](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220116091043305.png)
+![image-20220116091043305](http://114.116.23.72/images/2022/11/08/image-20220116091043305.png)
 
 - main(Continuation completion)应该是挂起的main，也就是我们代码里面的suspend main
 
@@ -1250,7 +1250,7 @@ internal actual object DefaultExecutor : EventLoopImplBase(), Runnable
 
 这是DefaultExecutor的继承结构。他们都是CoroutineDispatcher
 
-![image-20220117121630542](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220117121630542.png)
+![image-20220117121630542](http://114.116.23.72/images/2022/11/08/image-20220117121630542.png)
 
 你说这怎们看出来他是一个线程池的？就这好像也看不出来的？
 
@@ -1271,7 +1271,7 @@ internal actual object DefaultExecutor : EventLoopImplBase(), Runnable
   EventLoopImplBase
   ```
 
-  ![image-20220117122529423](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220117122529423.png)
+  ![image-20220117122529423](http://114.116.23.72/images/2022/11/08/image-20220117122529423.png)
 
   前几个方法和线程池的方法很类似。除此之外它内部还提供了几个内部类
 
@@ -1575,7 +1575,7 @@ override fun run() {
 
   算了懒得贴代码了，大致执行流程如下，把任务往下分发
 
-  ![image-20220117131904190](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220117131904190.png)
+  ![image-20220117131904190](http://114.116.23.72/images/2022/11/08/image-20220117131904190.png)
 
   最后在DispatchedTask<T>.resume调用resumeWith
 
@@ -1590,7 +1590,7 @@ override fun run() {
 
   可以发现现在执行suspend main的线程不再是main线程了，而是DefaultExecutor new地一个守护线程。
 
-  ![image-20220117132615624](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220117132615624.png)
+  ![image-20220117132615624](http://114.116.23.72/images/2022/11/08/image-20220117132615624.png)
 
 然后执行完suspend main之后（两种情况，要么main被挂起 了，要么完全执行完了），返回到了DefaultExecutor的processNextEvent()
 
@@ -1666,7 +1666,7 @@ fun main() {
 
 - 那么分析方向确定了也就是直接分析标准库内的代码
 
-![image-20220118095623293](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220118095623293.png)
+![image-20220118095623293](http://114.116.23.72/images/2022/11/08/image-20220118095623293.png)
 
 
 
@@ -1815,7 +1815,7 @@ public actual fun <T> (suspend () -> T).createCoroutineUnintercepted(
 
 suspend()->T是个什么类？反编译一下啊
 
-![image-20220118181246076](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220118181246076.png)
+![image-20220118181246076](http://114.116.23.72/images/2022/11/08/image-20220118181246076.png)
 
 编译器施加了魔法，把suspend ()->T 编译成了一个Function1(SuspendLambda)也就是一个输入值，一个输出值的Function。（输入值是Continuation，输出值是T）。为啥他是BaseContinuationImpl其实我也不知道的（因为SuspendLambda）。
 
@@ -2146,7 +2146,7 @@ public fun <T> iterator(@BuilderInference block: suspend SequenceScope<T>.() -> 
 
 直接new了一个SequenceBuilderIterator
 
-![image-20220119102830990](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220119102830990.png)
+![image-20220119102830990](http://114.116.23.72/images/2022/11/08/image-20220119102830990.png)
 
 然后在block外套了一层Continuation（也就是SequenceBuilderIterator），然后赋值给iterator.nextStep直接返回。答案呼之欲出了。也就是说所有与sequence挂起恢复的操作都是在这个SequenceBuilderIterator里面实现的。他是sequence实现的核心类
 
@@ -2914,7 +2914,7 @@ async和launch其实基本上是一致的，async是在launch的基础上加了�
 >
 > Time： 2022-1-23 CoroutineContext Key与AbstractCoroutineContextKey
 
-![image-20220121092056427](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220121092056427.png)
+![image-20220121092056427](http://114.116.23.72/images/2022/11/08/image-20220121092056427.png)
 
 CoroutineContext是一个接口（听君一席话，如听一席话）
 
@@ -3757,7 +3757,7 @@ public fun <T> (suspend () -> T).startCoroutineCancellable(completion: Continuat
 
 ### ContinuationInterceptor分析
 
-![image-20220124155425377](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124155425377.png)
+![image-20220124155425377](http://114.116.23.72/images/2022/11/08/image-20220124155425377.png)
 
 内容不多，就定义一个Key，重写了get和minusKey方法，加入了两个拦截方法。
 
@@ -3816,7 +3816,7 @@ public override fun minusKey(key: CoroutineContext.Key<*>): CoroutineContext {
 
 
 
-![image-20220124161632869](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124161632869.png)
+![image-20220124161632869](http://114.116.23.72/images/2022/11/08/image-20220124161632869.png)
 
 Base class to be extended by all coroutine dispatcher implementations.
 
@@ -3902,7 +3902,7 @@ public final override fun releaseInterceptedContinuation(continuation: Continuat
 
 plus被标记为了废弃，因为右边的会覆盖左边的，没有任何意义。会报错。
 
-![image-20220124164352529](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220124164352529.png)
+![image-20220124164352529](http://114.116.23.72/images/2022/11/08/image-20220124164352529.png)
 
 
 
@@ -5092,7 +5092,7 @@ Flow的流式api的实现比较简单，它利用了扩展函数在collect得时
 
 
 
-![Flow.drawio](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/Flow.drawio.png)
+![Flow.drawio](http://114.116.23.72/images/2022/11/08/Flow.drawio.png)
 
 
 
@@ -5478,7 +5478,7 @@ Gradle: org.jetbrains.kotlin:kotlin-stdlib-common:1.5.31
 
 其实内容没有想的那么多（毕竟是common库嘛）
 
-![image-20220122131744666](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122131744666.png)
+![image-20220122131744666](http://114.116.23.72/images/2022/11/08/image-20220122131744666.png)
 
 
 
@@ -5849,7 +5849,7 @@ suspend fun test() = suspendCoroutine<Unit> {
 
 ### Content
 
-![image-20220122164805380](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122164805380.png)
+![image-20220122164805380](http://114.116.23.72/images/2022/11/08/image-20220122164805380.png)
 
 乍一看好像和前面的base好像是差不多的。
 
@@ -5861,7 +5861,7 @@ suspend fun test() = suspendCoroutine<Unit> {
 
 看上去有很多包，but相比于之前的stdlib-common只增加了一个jvm.internal,所以我们只需要分析jvm.internal 即可。
 
-![image-20220122165412158](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122165412158.png)
+![image-20220122165412158](http://114.116.23.72/images/2022/11/08/image-20220122165412158.png)
 
 
 
@@ -6158,11 +6158,11 @@ kotlin stdlib coroutine-JVM只是在common的基础上加上了几个Continuatio
 
 千万不要尝试点开整个库。相信我你会崩溃的，内容是真的多。所以我clone了一份官方库。
 
-![image-20220122193351702](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122193351702.png)
+![image-20220122193351702](http://114.116.23.72/images/2022/11/08/image-20220122193351702.png)
 
 
 
-![image-20220122194454411](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122194454411.png)
+![image-20220122194454411](http://114.116.23.72/images/2022/11/08/image-20220122194454411.png)
 
 
 
@@ -6244,7 +6244,7 @@ Undispatched就是不被调度的意思。也就是说直接在当前线程开�
 
 内部的东西就比较多了
 
-![image-20220122204331543](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220122204331543.png)
+![image-20220122204331543](http://114.116.23.72/images/2022/11/08/image-20220122204331543.png)
 
 
 
@@ -6426,7 +6426,7 @@ kotlinx-coroutines引入了协程的作用域的概念，然后在stdlib协程�
 
 
 
-![image-20220123140622636](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20220123140622636.png)
+![image-20220123140622636](http://114.116.23.72/images/2022/11/08/image-20220123140622636.png)
 
 JVM的具体实现其实没有我们想得那么难，似乎并没有那么多。
 
